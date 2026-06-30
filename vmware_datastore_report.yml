@@ -5,7 +5,8 @@
   connection: local
 
   vars:
-    datacenter_name: "DC01"
+    datacenter_name: "Datacenter_Demo"
+    report_datastore_type: "VMFS"   # VMFS, NFS veya ALL yazabilirsin
 
   tasks:
     - name: Gather datastore information from vCenter
@@ -20,18 +21,57 @@
       delegate_to: localhost
       register: datastore_info
 
-    - name: Print datastore capacity report
+    - name: Select datastores for report
+      ansible.builtin.set_fact:
+        selected_datastores: >-
+          {{
+            datastore_info.datastores
+            if report_datastore_type == "ALL"
+            else datastore_info.datastores | selectattr('type', 'equalto', report_datastore_type) | list
+          }}
+
+    - name: Build clean datastore report data in TB
+      ansible.builtin.set_fact:
+        datastore_report: "{{ datastore_report | default([]) + [ report_item ] }}"
+      vars:
+        capacity_tb: "{{ ((item.capacity | float) / 1099511627776) | round(2) }}"
+        free_tb: "{{ ((item.freeSpace | float) / 1099511627776) | round(2) }}"
+        used_tb: "{{ (((item.capacity | float) - (item.freeSpace | float)) / 1099511627776) | round(2) }}"
+        used_percent: "{{ ((((item.capacity | float) - (item.freeSpace | float)) / (item.capacity | float)) * 100) | round(2) }}"
+        provisioned_tb: "{{ ((item.provisioned | default(0) | float) / 1099511627776) | round(2) }}"
+        uncommitted_tb: "{{ ((item.uncommitted | default(0) | float) / 1099511627776) | round(2) }}"
+        report_item:
+          name: "{{ item.name }}"
+          type: "{{ item.type }}"
+          capacity_tb: "{{ capacity_tb }}"
+          free_tb: "{{ free_tb }}"
+          used_tb: "{{ used_tb }}"
+          used_percent: "{{ used_percent }}"
+          provisioned_tb: "{{ provisioned_tb }}"
+          uncommitted_tb: "{{ uncommitted_tb }}"
+          accessible: "{{ item.accessible }}"
+      loop: "{{ selected_datastores }}"
+
+    - name: Print readable datastore capacity report in TB
       ansible.builtin.debug:
         msg: |
-          Datastore: {{ item.name }}
-          Type: {{ item.type }}
-          Capacity GB: {{ (item.capacity / 1024 / 1024 / 1024) | round(2) }}
-          Free GB: {{ (item.freeSpace / 1024 / 1024 / 1024) | round(2) }}
-          Used GB: {{ ((item.capacity - item.freeSpace) / 1024 / 1024 / 1024) | round(2) }}
-          Used %: {{ (((item.capacity - item.freeSpace) / item.capacity) * 100) | round(2) }}
-          Provisioned GB: {{ (item.provisioned / 1024 / 1024 / 1024) | round(2) if item.provisioned is defined else 'N/A' }}
-          Uncommitted GB: {{ (item.uncommitted / 1024 / 1024 / 1024) | round(2) if item.uncommitted is defined else 'N/A' }}
-          VMFS UUID: {{ item.vmfs_uuid | default('N/A') }}
-          Accessible: {{ item.accessible }}
-      loop: "{{ datastore_info.datastores }}"
-      when: item.type == "VMFS"
+          VMware Datastore Capacity Report
+          Datacenter: {{ datacenter_name }}
+          Datastore Type Filter: {{ report_datastore_type }}
+          Unit: TB
+
+          {{ "%-35s %-8s %12s %12s %12s %10s %15s %15s %12s" | format("Datastore", "Type", "CapacityTB", "FreeTB", "UsedTB", "Used%", "ProvisionedTB", "UncommittedTB", "Accessible") }}
+          {{ "-" * 135 }}
+          {% for ds in datastore_report %}
+          {{ "%-35s %-8s %12.2f %12.2f %12.2f %10.2f %15.2f %15.2f %12s" | format(ds.name, ds.type, ds.capacity_tb | float, ds.free_tb | float, ds.used_tb | float, ds.used_percent | float, ds.provisioned_tb | float, ds.uncommitted_tb | float, ds.accessible) }}
+          {% endfor %}
+
+    - name: Print CSV format for customer report in TB
+      ansible.builtin.debug:
+        msg: |
+          CSV_REPORT_BEGIN
+          Datastore,Type,Capacity_TB,Free_TB,Used_TB,Used_Percent,Provisioned_TB,Uncommitted_TB,Accessible
+          {% for ds in datastore_report %}
+          "{{ ds.name }}","{{ ds.type }}","{{ ds.capacity_tb }}","{{ ds.free_tb }}","{{ ds.used_tb }}","{{ ds.used_percent }}","{{ ds.provisioned_tb }}","{{ ds.uncommitted_tb }}","{{ ds.accessible }}"
+          {% endfor %}
+          CSV_REPORT_END

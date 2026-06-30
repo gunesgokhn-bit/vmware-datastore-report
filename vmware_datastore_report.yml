@@ -106,7 +106,7 @@
         total_provisioned_tb: "{{ (datastore_report | map(attribute='provisioned_tb') | map('float') | sum) | round(2) }}"
         total_used_percent: "{{ (((datastore_report | map(attribute='used_tb') | map('float') | sum) / (datastore_report | map(attribute='capacity_tb') | map('float') | sum)) * 100) | round(2) }}"
 
-           - name: Print report title
+    - name: Print report title
       ansible.builtin.debug:
         msg: "========== VMware Datastore Capacity Report | Datacenter={{ datacenter_name }} | Filter={{ report_datastore_type }} =========="
 
@@ -133,7 +133,7 @@
       ansible.builtin.debug:
         msg: "TOTAL | - | {{ total_capacity_tb }} TB | {{ total_free_tb }} TB | {{ total_used_tb }} TB | {{ total_used_percent }}% | {{ total_provisioned_tb }} TB | - | - | -"
 
-        - name: Print CSV header
+    - name: Print CSV header
       ansible.builtin.debug:
         msg: "CSV: Datastore_Name,Datastore_Type,Capacity,Free,Used,Used_Percent,Provisioned,Uncommitted,Accessible,Status"
 
@@ -147,4 +147,3 @@
     - name: Print CSV total
       ansible.builtin.debug:
         msg: 'CSV: "TOTAL","-","{{ total_capacity_tb }} TB","{{ total_free_tb }} TB","{{ total_used_tb }} TB","{{ total_used_percent }}","{{ total_provisioned_tb }} TB","-","-","-"'
-    

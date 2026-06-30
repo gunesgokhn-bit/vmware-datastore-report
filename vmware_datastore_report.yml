@@ -1,0 +1,37 @@
+---
+- name: VMware Datastore Capacity Report
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    datacenter_name: "DC01"
+
+  tasks:
+    - name: Gather datastore information from vCenter
+      community.vmware.vmware_datastore_info:
+        hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+        username: "{{ lookup('env', 'VMWARE_USER') }}"
+        password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+        validate_certs: false
+        datacenter_name: "{{ datacenter_name }}"
+        schema: summary
+        gather_vmfs_mount_info: true
+      delegate_to: localhost
+      register: datastore_info
+
+    - name: Print datastore capacity report
+      ansible.builtin.debug:
+        msg: |
+          Datastore: {{ item.name }}
+          Type: {{ item.type }}
+          Capacity GB: {{ (item.capacity / 1024 / 1024 / 1024) | round(2) }}
+          Free GB: {{ (item.freeSpace / 1024 / 1024 / 1024) | round(2) }}
+          Used GB: {{ ((item.capacity - item.freeSpace) / 1024 / 1024 / 1024) | round(2) }}
+          Used %: {{ (((item.capacity - item.freeSpace) / item.capacity) * 100) | round(2) }}
+          Provisioned GB: {{ (item.provisioned / 1024 / 1024 / 1024) | round(2) if item.provisioned is defined else 'N/A' }}
+          Uncommitted GB: {{ (item.uncommitted / 1024 / 1024 / 1024) | round(2) if item.uncommitted is defined else 'N/A' }}
+          VMFS UUID: {{ item.vmfs_uuid | default('N/A') }}
+          Accessible: {{ item.accessible }}
+      loop: "{{ datastore_info.datastores }}"
+      when: item.type == "VMFS"

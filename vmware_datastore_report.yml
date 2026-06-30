@@ -6,7 +6,8 @@
 
   vars:
     datacenter_name: "Datacenter_Demo"
-    report_datastore_type: "VMFS"   # VMFS, NFS veya ALL
+    report_datastore_type: "ALL"   # ALL, VMFS veya NFS yazabilirsin
+    bytes_in_gb: 1073741824
     bytes_in_tb: 1099511627776
     warning_threshold_percent: 80
     critical_threshold_percent: 90
@@ -41,12 +42,33 @@
       ansible.builtin.set_fact:
         datastore_report: "{{ datastore_report + [ report_item ] }}"
       vars:
+        capacity_gb: "{{ ((item.capacity | float) / bytes_in_gb) | round(2) }}"
+        free_gb: "{{ ((item.freeSpace | float) / bytes_in_gb) | round(2) }}"
+        used_gb: "{{ (((item.capacity | float) - (item.freeSpace | float)) / bytes_in_gb) | round(2) }}"
+        provisioned_gb: "{{ ((item.provisioned | default(0) | float) / bytes_in_gb) | round(2) }}"
+        uncommitted_gb: "{{ ((item.uncommitted | default(0) | float) / bytes_in_gb) | round(2) }}"
+
         capacity_tb: "{{ ((item.capacity | float) / bytes_in_tb) | round(2) }}"
         free_tb: "{{ ((item.freeSpace | float) / bytes_in_tb) | round(2) }}"
         used_tb: "{{ (((item.capacity | float) - (item.freeSpace | float)) / bytes_in_tb) | round(2) }}"
-        used_percent: "{{ ((((item.capacity | float) - (item.freeSpace | float)) / (item.capacity | float)) * 100) | round(2) }}"
         provisioned_tb: "{{ ((item.provisioned | default(0) | float) / bytes_in_tb) | round(2) }}"
         uncommitted_tb: "{{ ((item.uncommitted | default(0) | float) / bytes_in_tb) | round(2) }}"
+
+        used_percent: "{{ ((((item.capacity | float) - (item.freeSpace | float)) / (item.capacity | float)) * 100) | round(2) }}"
+
+        capacity_display: "{{ (capacity_tb ~ ' TB') if (item.capacity | float >= bytes_in_tb) else (capacity_gb ~ ' GB') }}"
+        free_display: "{{ (free_tb ~ ' TB') if (item.freeSpace | float >= bytes_in_tb) else (free_gb ~ ' GB') }}"
+        used_display: "{{ (used_tb ~ ' TB') if (((item.capacity | float) - (item.freeSpace | float)) >= bytes_in_tb) else (used_gb ~ ' GB') }}"
+        provisioned_display: "{{ (provisioned_tb ~ ' TB') if (item.provisioned | default(0) | float >= bytes_in_tb) else (provisioned_gb ~ ' GB') }}"
+        uncommitted_display: "{{ (uncommitted_tb ~ ' TB') if (item.uncommitted | default(0) | float >= bytes_in_tb) else (uncommitted_gb ~ ' GB') }}"
+
+        type_display: >-
+          {% if item.type == 'VMFS' and item.vmfs_version is defined %}
+          VMFS {{ item.vmfs_version | string | regex_replace('\..*$', '') }}
+          {% else %}
+          {{ item.type }}
+          {% endif %}
+
         status_value: >-
           {% if used_percent | float >= critical_threshold_percent %}
           CRITICAL
@@ -55,13 +77,19 @@
           {% else %}
           OK
           {% endif %}
+
         report_item:
-          name: "{{ item.name }}"
-          type: "{{ item.type }}"
+          datastore_name: "{{ item.name }}"
+          datastore_type: "{{ type_display | trim }}"
+          capacity: "{{ capacity_display }}"
+          free: "{{ free_display }}"
+          used: "{{ used_display }}"
+          used_percent: "{{ used_percent }}"
+          provisioned: "{{ provisioned_display }}"
+          uncommitted: "{{ uncommitted_display }}"
           capacity_tb: "{{ capacity_tb }}"
           free_tb: "{{ free_tb }}"
           used_tb: "{{ used_tb }}"
-          used_percent: "{{ used_percent }}"
           provisioned_tb: "{{ provisioned_tb }}"
           uncommitted_tb: "{{ uncommitted_tb }}"
           accessible: "{{ item.accessible }}"
@@ -80,30 +108,30 @@
 
     - name: Report header
       ansible.builtin.debug:
-        msg: "REPORT: VMware Datastore Capacity Report | Datacenter={{ datacenter_name }} | Type={{ report_datastore_type }} | Unit=TB"
+        msg: "REPORT: VMware Datastore Capacity Report | Datacenter={{ datacenter_name }} | Filter={{ report_datastore_type }}"
 
     - name: Report lines
       ansible.builtin.debug:
-        msg: "REPORT: {{ item.name }} | Type={{ item.type }} | Capacity={{ item.capacity_tb }} TB | Free={{ item.free_tb }} TB | Used={{ item.used_tb }} TB | Used={{ item.used_percent }}% | Provisioned={{ item.provisioned_tb }} TB | Uncommitted={{ item.uncommitted_tb }} TB | Accessible={{ item.accessible }} | Status={{ item.status }}"
+        msg: "REPORT: Datastore_Name={{ item.datastore_name }} | Datastore_Type={{ item.datastore_type }} | Capacity={{ item.capacity }} | Free={{ item.free }} | Used={{ item.used }} | Used%={{ item.used_percent }}% | Provisioned={{ item.provisioned }} | Uncommitted={{ item.uncommitted }} | Accessible={{ item.accessible }} | Status={{ item.status }}"
       loop: "{{ datastore_report }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.datastore_name }}"
 
     - name: Report total
       ansible.builtin.debug:
-        msg: "REPORT: TOTAL | Capacity={{ total_capacity_tb }} TB | Free={{ total_free_tb }} TB | Used={{ total_used_tb }} TB | Used={{ total_used_percent }}% | Provisioned={{ total_provisioned_tb }} TB"
+        msg: "REPORT: TOTAL | Capacity={{ total_capacity_tb }} TB | Free={{ total_free_tb }} TB | Used={{ total_used_tb }} TB | Used%={{ total_used_percent }}% | Provisioned={{ total_provisioned_tb }} TB"
 
     - name: CSV header
       ansible.builtin.debug:
-        msg: "CSV: Datastore,Type,Capacity_TB,Free_TB,Used_TB,Used_Percent,Provisioned_TB,Uncommitted_TB,Accessible,Status"
+        msg: "CSV: Datastore_Name,Datastore_Type,Capacity,Free,Used,Used_Percent,Provisioned,Uncommitted,Accessible,Status"
 
     - name: CSV lines
       ansible.builtin.debug:
-        msg: 'CSV: "{{ item.name }}","{{ item.type }}","{{ item.capacity_tb }}","{{ item.free_tb }}","{{ item.used_tb }}","{{ item.used_percent }}","{{ item.provisioned_tb }}","{{ item.uncommitted_tb }}","{{ item.accessible }}","{{ item.status }}"'
+        msg: 'CSV: "{{ item.datastore_name }}","{{ item.datastore_type }}","{{ item.capacity }}","{{ item.free }}","{{ item.used }}","{{ item.used_percent }}","{{ item.provisioned }}","{{ item.uncommitted }}","{{ item.accessible }}","{{ item.status }}"'
       loop: "{{ datastore_report }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.datastore_name }}"
 
     - name: CSV total
       ansible.builtin.debug:
-        msg: 'CSV: "TOTAL","-","{{ total_capacity_tb }}","{{ total_free_tb }}","{{ total_used_tb }}","{{ total_used_percent }}","{{ total_provisioned_tb }}","-","-","-"'
+        msg: 'CSV: "TOTAL","-","{{ total_capacity_tb }} TB","{{ total_free_tb }} TB","{{ total_used_tb }} TB","{{ total_used_percent }}","{{ total_provisioned_tb }} TB","-","-","-"'

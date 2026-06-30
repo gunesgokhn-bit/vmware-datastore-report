@@ -6,7 +6,10 @@
 
   vars:
     datacenter_name: "Datacenter_Demo"
-    report_datastore_type: "VMFS"   # VMFS, NFS veya ALL yazabilirsin
+    report_datastore_type: "VMFS"   # VMFS, NFS veya ALL
+    bytes_in_tb: 1099511627776
+    warning_threshold_percent: 80
+    critical_threshold_percent: 90
 
   tasks:
     - name: Gather datastore information from vCenter
@@ -30,16 +33,28 @@
             else datastore_info.datastores | selectattr('type', 'equalto', report_datastore_type) | list
           }}
 
-    - name: Build clean datastore report data in TB
+    - name: Initialize report list
       ansible.builtin.set_fact:
-        datastore_report: "{{ datastore_report | default([]) + [ report_item ] }}"
+        datastore_report: []
+
+    - name: Build datastore report data
+      ansible.builtin.set_fact:
+        datastore_report: "{{ datastore_report + [ report_item ] }}"
       vars:
-        capacity_tb: "{{ ((item.capacity | float) / 1099511627776) | round(2) }}"
-        free_tb: "{{ ((item.freeSpace | float) / 1099511627776) | round(2) }}"
-        used_tb: "{{ (((item.capacity | float) - (item.freeSpace | float)) / 1099511627776) | round(2) }}"
+        capacity_tb: "{{ ((item.capacity | float) / bytes_in_tb) | round(2) }}"
+        free_tb: "{{ ((item.freeSpace | float) / bytes_in_tb) | round(2) }}"
+        used_tb: "{{ (((item.capacity | float) - (item.freeSpace | float)) / bytes_in_tb) | round(2) }}"
         used_percent: "{{ ((((item.capacity | float) - (item.freeSpace | float)) / (item.capacity | float)) * 100) | round(2) }}"
-        provisioned_tb: "{{ ((item.provisioned | default(0) | float) / 1099511627776) | round(2) }}"
-        uncommitted_tb: "{{ ((item.uncommitted | default(0) | float) / 1099511627776) | round(2) }}"
+        provisioned_tb: "{{ ((item.provisioned | default(0) | float) / bytes_in_tb) | round(2) }}"
+        uncommitted_tb: "{{ ((item.uncommitted | default(0) | float) / bytes_in_tb) | round(2) }}"
+        status_value: >-
+          {% if used_percent | float >= critical_threshold_percent %}
+          CRITICAL
+          {% elif used_percent | float >= warning_threshold_percent %}
+          WARNING
+          {% else %}
+          OK
+          {% endif %}
         report_item:
           name: "{{ item.name }}"
           type: "{{ item.type }}"
@@ -50,28 +65,56 @@
           provisioned_tb: "{{ provisioned_tb }}"
           uncommitted_tb: "{{ uncommitted_tb }}"
           accessible: "{{ item.accessible }}"
+          status: "{{ status_value | trim }}"
       loop: "{{ selected_datastores }}"
 
-    - name: Print readable datastore capacity report in TB
+    - name: Calculate summary
+      ansible.builtin.set_fact:
+        total_capacity_tb: "{{ (datastore_report | map(attribute='capacity_tb') | map('float') | sum) | round(2) }}"
+        total_free_tb: "{{ (datastore_report | map(attribute='free_tb') | map('float') | sum) | round(2) }}"
+        total_used_tb: "{{ (datastore_report | map(attribute='used_tb') | map('float') | sum) | round(2) }}"
+        total_provisioned_tb: "{{ (datastore_report | map(attribute='provisioned_tb') | map('float') | sum) | round(2) }}"
+        total_used_percent: "{{ (((datastore_report | map(attribute='used_tb') | map('float') | sum) / (datastore_report | map(attribute='capacity_tb') | map('float') | sum)) * 100) | round(2) }}"
+
+    - name: Print customer friendly datastore report
       ansible.builtin.debug:
         msg: |
-          VMware Datastore Capacity Report
-          Datacenter: {{ datacenter_name }}
-          Datastore Type Filter: {{ report_datastore_type }}
-          Unit: TB
+          
+          ========================================================================================================================
+                                             VMWARE DATASTORE CAPACITY REPORT
+          ========================================================================================================================
+          Datacenter             : {{ datacenter_name }}
+          Datastore Type Filter  : {{ report_datastore_type }}
+          Unit                   : TB
+          Warning Threshold      : {{ warning_threshold_percent }}%
+          Critical Threshold     : {{ critical_threshold_percent }}%
+          ========================================================================================================================
 
-          {{ "%-35s %-8s %12s %12s %12s %10s %15s %15s %12s" | format("Datastore", "Type", "CapacityTB", "FreeTB", "UsedTB", "Used%", "ProvisionedTB", "UncommittedTB", "Accessible") }}
-          {{ "-" * 135 }}
+          {{ "%-30s %-8s %12s %12s %12s %10s %15s %15s %12s %10s" | format("Datastore", "Type", "Capacity", "Free", "Used", "Used%", "Provisioned", "Uncommitted", "Accessible", "Status") }}
+          {{ "-" * 140 }}
           {% for ds in datastore_report %}
-          {{ "%-35s %-8s %12.2f %12.2f %12.2f %10.2f %15.2f %15.2f %12s" | format(ds.name, ds.type, ds.capacity_tb | float, ds.free_tb | float, ds.used_tb | float, ds.used_percent | float, ds.provisioned_tb | float, ds.uncommitted_tb | float, ds.accessible) }}
+          {{ "%-30s %-8s %12.2f %12.2f %12.2f %9.2f%% %15.2f %15.2f %12s %10s" | format(ds.name, ds.type, ds.capacity_tb | float, ds.free_tb | float, ds.used_tb | float, ds.used_percent | float, ds.provisioned_tb | float, ds.uncommitted_tb | float, ds.accessible, ds.status) }}
           {% endfor %}
+          {{ "-" * 140 }}
+          {{ "%-30s %-8s %12.2f %12.2f %12.2f %9.2f%% %15.2f %15s %12s %10s" | format("TOTAL", "-", total_capacity_tb | float, total_free_tb | float, total_used_tb | float, total_used_percent | float, total_provisioned_tb | float, "-", "-", "-") }}
 
-    - name: Print CSV format for customer report in TB
+          ========================================================================================================================
+          SUMMARY
+          ========================================================================================================================
+          Total Capacity     : {{ total_capacity_tb }} TB
+          Total Used         : {{ total_used_tb }} TB
+          Total Free         : {{ total_free_tb }} TB
+          Total Used Percent : {{ total_used_percent }}%
+          Total Provisioned  : {{ total_provisioned_tb }} TB
+          ========================================================================================================================
+
+    - name: Print CSV format for Excel report
       ansible.builtin.debug:
         msg: |
           CSV_REPORT_BEGIN
-          Datastore,Type,Capacity_TB,Free_TB,Used_TB,Used_Percent,Provisioned_TB,Uncommitted_TB,Accessible
+          Datastore,Type,Capacity_TB,Free_TB,Used_TB,Used_Percent,Provisioned_TB,Uncommitted_TB,Accessible,Status
           {% for ds in datastore_report %}
-          "{{ ds.name }}","{{ ds.type }}","{{ ds.capacity_tb }}","{{ ds.free_tb }}","{{ ds.used_tb }}","{{ ds.used_percent }}","{{ ds.provisioned_tb }}","{{ ds.uncommitted_tb }}","{{ ds.accessible }}"
+          "{{ ds.name }}","{{ ds.type }}","{{ ds.capacity_tb }}","{{ ds.free_tb }}","{{ ds.used_tb }}","{{ ds.used_percent }}","{{ ds.provisioned_tb }}","{{ ds.uncommitted_tb }}","{{ ds.accessible }}","{{ ds.status }}"
           {% endfor %}
+          "TOTAL","-","{{ total_capacity_tb }}","{{ total_free_tb }}","{{ total_used_tb }}","{{ total_used_percent }}","{{ total_provisioned_tb }}","-","-","-"
           CSV_REPORT_END
